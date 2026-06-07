@@ -8,7 +8,8 @@ function InterviewInner() {
   const room = params.get("room");
   const id = params.get("id");
   const callRef = useRef<any>(null);
-  const [status, setStatus] = useState<"connecting" | "connected" | "error">("connecting");
+  const joinedRef = useRef(false);
+  const [status, setStatus] = useState<"mic" | "joining" | "connected" | "error">("mic");
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
@@ -18,25 +19,52 @@ function InterviewInner() {
     }
     let call: any;
     let cancelled = false;
+
     (async () => {
+      // 1) Force the microphone permission prompt + verify access first.
       try {
-        const Daily = (await import("@daily-co/daily-js")).default;
-        call = Daily.createCallObject({ subscribeToTracksAutomatically: true });
-        callRef.current = call;
-        call.on("joined-meeting", () => !cancelled && setStatus("connected"));
-        call.on("left-meeting", () => router.push(`/result/${id}`));
-        call.on("error", (e: any) => {
-          setStatus("error");
-          setMsg(e?.errorMsg || "Connection error");
-        });
-        await call.join({ url: room, startVideoOff: true, startAudioOff: false });
+        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+        s.getTracks().forEach((t) => t.stop());
       } catch (e: any) {
+        console.error("mic error", e);
+        setStatus("error");
+        setMsg("Microphone is blocked. Click the lock icon in the address bar → Site settings → Microphone → Allow, then reload this page.");
+        return;
+      }
+      if (cancelled) return;
+
+      // 2) Join the Daily room.
+      try {
+        setStatus("joining");
+        const Daily = (await import("@daily-co/daily-js")).default;
+        call = Daily.createCallObject();
+        callRef.current = call;
+        call.on("joined-meeting", () => {
+          joinedRef.current = true;
+          if (!cancelled) setStatus("connected");
+        });
+        call.on("error", (e: any) => {
+          console.error("daily error", e);
+          if (!cancelled) {
+            setStatus("error");
+            setMsg("Call error: " + (e?.errorMsg || JSON.stringify(e)));
+          }
+        });
+        // Only go to the result page if we ACTUALLY joined and then left.
+        call.on("left-meeting", () => {
+          if (joinedRef.current) router.push(`/result/${id}`);
+        });
+        await call.join({ url: room, startVideoOff: true });
+        await call.setLocalAudio(true);
+      } catch (e: any) {
+        console.error("join failed", e);
         if (!cancelled) {
           setStatus("error");
-          setMsg(e?.message || "Could not join the call. Allow mic access and use Chrome/Edge.");
+          setMsg("Could not join the interview: " + (e?.errorMsg || e?.message || String(e)));
         }
       }
     })();
+
     return () => {
       cancelled = true;
       try { call?.destroy(); } catch {}
@@ -44,24 +72,32 @@ function InterviewInner() {
   }, [room, id, router]);
 
   function end() {
-    if (callRef.current) callRef.current.leave();
+    if (joinedRef.current && callRef.current) callRef.current.leave();
     else router.push(`/result/${id}`);
   }
 
   return (
     <div className="wrap">
       <div className="card" style={{ textAlign: "center" }}>
-        <h1>Interview in progress</h1>
-        {status === "connecting" && <p className="sub">Connecting… allow microphone access when prompted.</p>}
+        <h1>Interview</h1>
+        {status === "mic" && <p className="sub">Requesting microphone… please click “Allow”.</p>}
+        {status === "joining" && <p className="sub">Connecting to Aria…</p>}
         {status === "connected" && (
           <div className="live" style={{ justifyContent: "center", margin: "18px 0" }}>
-            <span className="dot" /> Connected — Aria is listening. Just talk. Interrupt her any time.
+            <span className="dot" /> Connected — Aria is listening. Just talk; interrupt her any time.
           </div>
         )}
         {status === "error" && <p className="err">{msg}</p>}
-        <button onClick={end} className="ghost" style={{ maxWidth: 240, margin: "24px auto 0" }}>
-          End interview & see verdict
-        </button>
+        {status === "connected" && (
+          <button onClick={end} className="ghost" style={{ maxWidth: 240, margin: "24px auto 0" }}>
+            End interview & see verdict
+          </button>
+        )}
+        {status === "error" && (
+          <button onClick={() => router.push("/")} className="ghost" style={{ maxWidth: 200, margin: "20px auto 0" }}>
+            Back
+          </button>
+        )}
         <p className="pill" style={{ marginTop: 16 }}>Use headphones so Aria's voice doesn't echo into your mic.</p>
       </div>
     </div>
