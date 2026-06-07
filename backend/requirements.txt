@@ -1,0 +1,7 @@
+# SViam Voice Demo — backend (FastAPI + Pipecat + Daily).
+pipecat-ai[daily,deepgram,elevenlabs,groq,anthropic,silero]
+fastapi
+uvicorn[standard]
+httpx
+python-dotenv
+groq

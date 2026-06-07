@@ -1,0 +1,30 @@
+# Render Blueprint — deploy the backend as a free web service.
+# In Render: New → Blueprint → pick this repo. It reads this file. Set the secret env vars
+# (sync:false) in the dashboard, or rely on the Supabase app_config row for the API keys.
+services:
+  - type: web
+    name: sviam-voice-demo
+    runtime: python
+    plan: free
+    rootDir: sviam-voice-demo/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: DAILY_API_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      # Optional: API keys can live here OR in the Supabase app_config row (admin-editable).
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
