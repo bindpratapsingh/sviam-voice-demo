@@ -28,8 +28,9 @@ export default function Home() {
     setLoading(true);
     setErr("");
     try {
-      const { session_id, room_url } = await createSession(language, strictness);
-      router.push(`/interview?room=${encodeURIComponent(room_url)}&id=${session_id}`);
+      const { session_id, url, token } = await createSession(language, strictness);
+      sessionStorage.setItem(`lk-${session_id}`, JSON.stringify({ url, token }));
+      router.push(`/interview?id=${session_id}`);
     } catch (e: any) {
       setErr(e?.message || "Could not start the interview.");
       setLoading(false);
