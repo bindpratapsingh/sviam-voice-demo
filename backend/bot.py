@@ -19,7 +19,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
-from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
 import storage
 from core.language_config import get_language_config
@@ -134,7 +134,7 @@ def _make_tts(lang, cfg: dict):
     )
 
 
-async def run_interview(room_url: str, token: str, session_id: str, language: str,
+async def run_interview(url: str, token: str, room: str, session_id: str, language: str,
                         strictness: str, cfg: dict) -> None:
     lang = get_language_config(language)
     profile = get_strictness_profile(_resolve_strictness(strictness))
@@ -148,15 +148,11 @@ async def run_interview(room_url: str, token: str, session_id: str, language: st
     tts = _make_tts(lang, cfg)
     llm = _make_llm(system_prompt, cfg)
 
-    transport = DailyTransport(
-        room_url,
+    transport = LiveKitTransport(
+        url,
         token,
-        "Aria",
-        params=DailyParams(
-            api_key=os.getenv("DAILY_API_KEY", ""),
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-        ),
+        room,
+        params=LiveKitParams(audio_in_enabled=True, audio_out_enabled=True),
     )
 
     context = LLMContext()
@@ -202,12 +198,12 @@ async def run_interview(room_url: str, token: str, session_id: str, language: st
             logger.warning(f"[{session_id}] finalize failed: {e}")
 
     @transport.event_handler("on_first_participant_joined")
-    async def _on_join(transport, participant):
+    async def _on_join(transport, participant_id):
         greeting = _GREETINGS.get(lang.locale, _DEFAULT_GREETING)
         await task.queue_frames([TTSSpeakFrame(text=greeting, append_to_context=True)])
 
-    @transport.event_handler("on_participant_left")
-    async def _on_left(transport, participant, reason):
+    @transport.event_handler("on_participant_disconnected")
+    async def _on_left(transport, participant_id):
         await _finalize()
         await task.cancel()
 

@@ -14,9 +14,11 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+from uuid import uuid4  # noqa: E402
+
 import bot  # noqa: E402
 import config  # noqa: E402
-import daily_api  # noqa: E402
+import livekit_token as lk  # noqa: E402
 import storage  # noqa: E402
 
 app = FastAPI(title="SViam Voice Interview Demo")
@@ -46,17 +48,19 @@ async def create_session(body: CreateSession):
     cfg = await config.get_config()
     if not cfg.get("deepgram_key"):
         raise HTTPException(400, "No Deepgram key configured (set it in the admin panel).")
-    try:
-        room_url, token = await daily_api.create_room_and_token()
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"Daily room creation failed: {e}")
-    session_id = await storage.create_session(body.language, body.strictness, room_url)
+    if not (lk.LIVEKIT_URL and lk.API_KEY and lk.API_SECRET):
+        raise HTTPException(400, "LiveKit not configured (set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET).")
+
+    room = f"interview-{uuid4().hex[:10]}"
+    bot_token = lk.make_token(room, "aria-bot", "Aria")
+    candidate_token = lk.make_token(room, "candidate", "Candidate")
+    session_id = await storage.create_session(body.language, body.strictness, room)
     # Run the bot in the background; it joins the same room the candidate is about to join.
     asyncio.create_task(
-        bot.run_interview(room_url, token, session_id, body.language, body.strictness, cfg)
+        bot.run_interview(lk.LIVEKIT_URL, bot_token, room, session_id, body.language, body.strictness, cfg)
     )
-    logger.info(f"session {session_id} created ({body.language}/{body.strictness})")
-    return {"session_id": session_id, "room_url": room_url}
+    logger.info(f"session {session_id} created ({body.language}/{body.strictness}) room={room}")
+    return {"session_id": session_id, "url": lk.LIVEKIT_URL, "token": candidate_token}
 
 
 @app.get("/sessions/{session_id}/scorecard")
