@@ -10,7 +10,7 @@ async function post(path: string, body: any) {
   return r.json();
 }
 
-export function createSession(language: string, strictness: string): Promise<{ session_id: string; room_url: string }> {
+export function createSession(language: string, strictness: string): Promise<{ session_id: string; url: string; token: string }> {
   return post("/sessions", { language, strictness });
 }
 
