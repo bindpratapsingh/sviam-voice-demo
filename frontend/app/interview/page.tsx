@@ -8,10 +8,12 @@ function InterviewInner() {
   const id = params.get("id");
   const roomRef = useRef<any>(null);
   const joinedRef = useRef(false);
-  const [status, setStatus] = useState<"mic" | "joining" | "connected" | "error">("mic");
+  const credsRef = useRef<{ url: string; token: string } | null>(null);
+  const [status, setStatus] = useState<"ready" | "connecting" | "connected" | "error">("ready");
   const [msg, setMsg] = useState("");
   const [needAudio, setNeedAudio] = useState(false);
 
+  // Validate the session up front (don't join yet — joining waits for the Start click so audio is allowed to play).
   useEffect(() => {
     if (!id) {
       router.push("/");
@@ -23,64 +25,60 @@ function InterviewInner() {
       setMsg("Session expired. Go back and start a new interview.");
       return;
     }
-    const { url, token } = JSON.parse(raw);
-    let room: any;
-    let cancelled = false;
-
-    (async () => {
-      // 1) Mic permission prompt + verify.
-      try {
-        const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-        s.getTracks().forEach((t) => t.stop());
-      } catch (e) {
-        console.error("mic error", e);
-        setStatus("error");
-        setMsg("Microphone is blocked. Click the lock icon in the address bar → Site settings → Microphone → Allow, then reload.");
-        return;
-      }
-      if (cancelled) return;
-
-      // 2) Join the LiveKit room.
-      try {
-        setStatus("joining");
-        const { Room, RoomEvent } = await import("livekit-client");
-        room = new Room();
-        roomRef.current = room;
-
-        room.on(RoomEvent.TrackSubscribed, (track: any) => {
-          if (track.kind === "audio") {
-            const el = track.attach();
-            el.autoplay = true;
-            (el as HTMLMediaElement).play?.().catch(() => {});
-            document.body.appendChild(el);
-          }
-        });
-        room.on(RoomEvent.Disconnected, () => {
-          if (joinedRef.current) router.push(`/result/${id}`);
-        });
-        room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
-          if (!room.canPlaybackAudio) setNeedAudio(true);
-        });
-
-        await room.connect(url, token);
-        joinedRef.current = true;
-        await room.localParticipant.setMicrophoneEnabled(true);
-        try { await room.startAudio(); } catch { setNeedAudio(true); }
-        setStatus("connected");
-      } catch (e: any) {
-        console.error("join failed", e);
-        if (!cancelled) {
-          setStatus("error");
-          setMsg("Could not join the interview: " + (e?.message || String(e)));
-        }
-      }
-    })();
-
+    credsRef.current = JSON.parse(raw);
     return () => {
-      cancelled = true;
-      try { room?.disconnect(); } catch {}
+      try { roomRef.current?.disconnect(); } catch {}
     };
   }, [id, router]);
+
+  // Runs inside the Start click → user gesture → browser permits audio playback.
+  async function start() {
+    const creds = credsRef.current;
+    if (!creds) return;
+    setStatus("connecting");
+
+    // Mic permission + verify.
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      console.error("mic error", e);
+      setStatus("error");
+      setMsg("Microphone is blocked. Click the lock icon in the address bar → Site settings → Microphone → Allow, then reload.");
+      return;
+    }
+
+    try {
+      const { Room, RoomEvent } = await import("livekit-client");
+      const room = new Room();
+      roomRef.current = room;
+
+      room.on(RoomEvent.TrackSubscribed, (track: any) => {
+        if (track.kind === "audio") {
+          const el = track.attach();
+          el.autoplay = true;
+          (el as HTMLMediaElement).play?.().catch(() => setNeedAudio(true));
+          document.body.appendChild(el);
+        }
+      });
+      room.on(RoomEvent.Disconnected, () => {
+        if (joinedRef.current) router.push(`/result/${id}`);
+      });
+      room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+        if (!room.canPlaybackAudio) setNeedAudio(true);
+      });
+
+      await room.connect(creds.url, creds.token);
+      joinedRef.current = true;
+      try { await room.startAudio(); } catch { setNeedAudio(true); }
+      await room.localParticipant.setMicrophoneEnabled(true);
+      setStatus("connected");
+    } catch (e: any) {
+      console.error("join failed", e);
+      setStatus("error");
+      setMsg("Could not join the interview: " + (e?.message || String(e)));
+    }
+  }
 
   function end() {
     if (joinedRef.current && roomRef.current) roomRef.current.disconnect();
@@ -95,8 +93,14 @@ function InterviewInner() {
     <div className="wrap">
       <div className="card" style={{ textAlign: "center" }}>
         <h1>Interview</h1>
-        {status === "mic" && <p className="sub">Requesting microphone… please click “Allow”.</p>}
-        {status === "joining" && <p className="sub">Connecting to Aria…</p>}
+
+        {status === "ready" && (
+          <>
+            <p className="sub">Put on headphones (so Aria doesn't echo into your mic), then start.</p>
+            <button onClick={start} style={{ maxWidth: 280, margin: "8px auto 0" }}>▶ Start interview</button>
+          </>
+        )}
+        {status === "connecting" && <p className="sub">Connecting to Aria… allow the microphone.</p>}
         {status === "connected" && (
           <div className="live" style={{ justifyContent: "center", margin: "18px 0" }}>
             <span className="dot" /> Connected — Aria is listening. Just talk; interrupt her any time.
@@ -105,7 +109,7 @@ function InterviewInner() {
         {status === "error" && <p className="err">{msg}</p>}
 
         {needAudio && status === "connected" && (
-          <button onClick={enableSound} style={{ maxWidth: 240, margin: "0 auto 12px" }}>🔊 Enable Aria's voice</button>
+          <button onClick={enableSound} style={{ maxWidth: 280, margin: "0 auto 12px" }}>🔊 Can't hear Aria? Tap to enable sound</button>
         )}
         {status === "connected" && (
           <button onClick={end} className="ghost" style={{ maxWidth: 240, margin: "12px auto 0" }}>
@@ -115,7 +119,6 @@ function InterviewInner() {
         {status === "error" && (
           <button onClick={() => router.push("/")} className="ghost" style={{ maxWidth: 200, margin: "20px auto 0" }}>Back</button>
         )}
-        <p className="pill" style={{ marginTop: 16 }}>Use headphones so Aria's voice doesn't echo into your mic.</p>
       </div>
     </div>
   );
