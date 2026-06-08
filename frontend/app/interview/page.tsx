@@ -11,34 +11,40 @@ function InterviewInner() {
   const credsRef = useRef<{ url: string; token: string } | null>(null);
   const [status, setStatus] = useState<"ready" | "connecting" | "connected" | "error">("ready");
   const [msg, setMsg] = useState("");
-  // Live diagnostics shown on screen:
   const [botPresent, setBotPresent] = useState(false);
   const [gotAudio, setGotAudio] = useState(false);
   const [soundOn, setSoundOn] = useState(false);
 
   useEffect(() => {
-    if (!id) {
-      router.push("/");
-      return;
-    }
+    if (!id) { router.push("/"); return; }
     const raw = typeof window !== "undefined" ? sessionStorage.getItem(`lk-${id}`) : null;
-    if (!raw) {
-      setStatus("error");
-      setMsg("Session expired. Go back and start a new interview.");
-      return;
-    }
+    if (!raw) { setStatus("error"); setMsg("Session expired. Go back and start a new interview."); return; }
     credsRef.current = JSON.parse(raw);
-    return () => { try { roomRef.current?.disconnect(); } catch {} };
+    return () => {
+      document.removeEventListener("click", unlockAudio);
+      try { roomRef.current?.disconnect(); } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, router]);
+
+  // Force-play every audio element + resume LiveKit playback. Safe to call repeatedly.
+  async function unlockAudio() {
+    try { await roomRef.current?.startAudio(); } catch {}
+    document.querySelectorAll("audio").forEach((a) => {
+      a.muted = false;
+      a.play?.().catch(() => {});
+    });
+    if (roomRef.current?.canPlaybackAudio !== false) setSoundOn(true);
+  }
 
   function attachAudio(track: any) {
     try {
       const el = track.attach();
       el.autoplay = true;
-      (el as HTMLMediaElement).play?.().then(() => setSoundOn(true)).catch(() => {});
+      el.muted = false;
+      el.play?.().catch(() => {});
       document.body.appendChild(el);
       setGotAudio(true);
-      console.log("[lk] attached remote audio track");
     } catch (e) { console.error("attach failed", e); }
   }
 
@@ -62,32 +68,24 @@ function InterviewInner() {
       const room = new Room();
       roomRef.current = room;
 
-      room.on(RoomEvent.TrackSubscribed, (track: any, _pub: any, participant: any) => {
-        console.log("[lk] TrackSubscribed", track.kind, "from", participant?.identity);
-        if (track.kind === Track.Kind.Audio || track.kind === "audio") attachAudio(track);
+      room.on(RoomEvent.TrackSubscribed, (track: any, _pub: any, p: any) => {
+        console.log("[lk] TrackSubscribed", track.kind, "from", p?.identity);
+        if (track.kind === Track.Kind.Audio || track.kind === "audio") { attachAudio(track); unlockAudio(); }
       });
-      room.on(RoomEvent.ParticipantConnected, (p: any) => {
-        console.log("[lk] ParticipantConnected", p?.identity);
-        setBotPresent(true);
-      });
+      room.on(RoomEvent.ParticipantConnected, () => setBotPresent(true));
       room.on(RoomEvent.Disconnected, () => { if (joinedRef.current) router.push(`/result/${id}`); });
-      room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
-        setSoundOn(!!room.canPlaybackAudio);
-        console.log("[lk] canPlaybackAudio", room.canPlaybackAudio);
-      });
+      room.on(RoomEvent.AudioPlaybackStatusChanged, () => setSoundOn(!!room.canPlaybackAudio));
 
       await room.connect(creds.url, creds.token);
       joinedRef.current = true;
-      console.log("[lk] connected; remote participants:", room.remoteParticipants.size);
-
-      // Pick up anything already in the room (bot may have joined first).
       room.remoteParticipants.forEach((p: any) => {
         setBotPresent(true);
         p.trackPublications.forEach((pub: any) => { if (pub.track && pub.kind === "audio") attachAudio(pub.track); });
       });
-
-      try { await room.startAudio(); setSoundOn(true); } catch { /* needs the button */ }
       await room.localParticipant.setMicrophoneEnabled(true);
+      await unlockAudio();
+      // Any tap anywhere also force-unlocks audio (covers browser autoplay blocks).
+      document.addEventListener("click", unlockAudio);
       setStatus("connected");
     } catch (e: any) {
       console.error("join failed", e);
@@ -100,9 +98,6 @@ function InterviewInner() {
     if (joinedRef.current && roomRef.current) roomRef.current.disconnect();
     else router.push(`/result/${id}`);
   }
-  async function enableSound() {
-    try { await roomRef.current?.startAudio(); setSoundOn(true); } catch {}
-  }
 
   const yn = (b: boolean) => (b ? "✓" : "…");
   return (
@@ -112,19 +107,23 @@ function InterviewInner() {
 
         {status === "ready" && (
           <>
-            <p className="sub">Put on headphones (so Aria doesn't echo into your mic), then start.</p>
+            <p className="sub">Put on headphones, then start.</p>
             <button onClick={start} style={{ maxWidth: 280, margin: "8px auto 0" }}>▶ Start interview</button>
           </>
         )}
         {status === "connecting" && <p className="sub">Connecting to Aria… allow the microphone.</p>}
         {status === "connected" && (
           <>
+            {!soundOn && (
+              <button onClick={unlockAudio} style={{ background: "var(--green)", fontSize: 18, padding: 16, margin: "0 auto 14px", maxWidth: 360 }}>
+                🔊 TAP HERE TO HEAR ARIA
+              </button>
+            )}
             <div className="live" style={{ justifyContent: "center", margin: "14px 0" }}>
               <span className="dot" /> Connected — just talk; interrupt Aria any time.
             </div>
-            <p className="pill">Aria in room: {yn(botPresent)} &nbsp;·&nbsp; Receiving her audio: {yn(gotAudio)} &nbsp;·&nbsp; Sound on: {yn(soundOn)}</p>
-            <button onClick={enableSound} style={{ maxWidth: 300, margin: "10px auto 0" }}>🔊 Enable / unmute Aria's voice</button>
-            <button onClick={end} className="ghost" style={{ maxWidth: 240, margin: "10px auto 0" }}>End interview & see verdict</button>
+            <p className="pill">Aria in room: {yn(botPresent)} · Receiving her audio: {yn(gotAudio)} · Sound on: {yn(soundOn)}</p>
+            <button onClick={end} className="ghost" style={{ maxWidth: 240, margin: "12px auto 0" }}>End interview & see verdict</button>
           </>
         )}
         {status === "error" && (
