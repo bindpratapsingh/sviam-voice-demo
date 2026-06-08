@@ -8,80 +8,64 @@ function InterviewInner() {
   const id = params.get("id");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const roomRef = useRef<any>(null);
-  const botTrackRef = useRef<MediaStreamTrack | null>(null);
+  const trackRef = useRef<any>(null);
   const ctxRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
   const joinedRef = useRef(false);
   const credsRef = useRef<{ url: string; token: string } | null>(null);
   const [status, setStatus] = useState<"ready" | "connecting" | "connected" | "error">("ready");
   const [msg, setMsg] = useState("");
   const [gotAudio, setGotAudio] = useState(false);
   const [diag, setDiag] = useState("");
-  const [level, setLevel] = useState(0);
 
   useEffect(() => {
     if (!id) { router.push("/"); return; }
     const raw = typeof window !== "undefined" ? sessionStorage.getItem(`lk-${id}`) : null;
-    if (!raw) { setStatus("error"); setMsg("Session expired. Go back and start again."); return; }
+    if (!raw) { setStatus("error"); setMsg("Session expired. Go back and start a new interview."); return; }
     credsRef.current = JSON.parse(raw);
     return () => { try { roomRef.current?.disconnect(); } catch {} try { ctxRef.current?.close(); } catch {} };
   }, [id, router]);
 
-  function setupMeter() {
-    if (!botTrackRef.current || analyserRef.current) return;
-    try {
-      const ctx = ctxRef.current || new AudioContext();
-      ctxRef.current = ctx;
-      ctx.resume();
-      const src = ctx.createMediaStreamSource(new MediaStream([botTrackRef.current]));
-      const an = ctx.createAnalyser();
-      an.fftSize = 512;
-      src.connect(an);
-      analyserRef.current = an;
-      const buf = new Uint8Array(an.fftSize);
-      const tick = () => {
-        const a = analyserRef.current;
-        if (!a) return;
-        a.getByteTimeDomainData(buf);
-        let peak = 0;
-        for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i] - 128));
-        setLevel(peak);
-        requestAnimationFrame(tick);
-      };
-      tick();
-    } catch (e: any) { setDiag((d) => d + " meter✗:" + e.message); }
-  }
-
+  // A short test beep — proves the output device works. Uses its OWN oscillator,
+  // never touches Aria's track (so it can't hijack it from the <audio> element).
   async function beep() {
     try {
-      const ctx = ctxRef.current || new AudioContext();
+      const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
+      const ctx = ctxRef.current || new Ctx();
       ctxRef.current = ctx;
       await ctx.resume();
       const o = ctx.createOscillator();
       const g = ctx.createGain();
       o.frequency.value = 660;
-      g.gain.value = 0.25;
+      g.gain.value = 0.2;
       o.connect(g);
       g.connect(ctx.destination);
       o.start();
-      o.stop(ctx.currentTime + 0.2);
-    } catch (e: any) { setDiag((d) => d + " beep✗:" + e.message); }
+      o.stop(ctx.currentTime + 0.15);
+    } catch {}
   }
 
-  async function playNow() {
+  // Attach Aria's track to the real <audio> element and play it. The track is
+  // NEVER routed through Web Audio, so nothing steals it.
+  function attach() {
+    const el = audioRef.current;
+    if (el && trackRef.current) {
+      try { trackRef.current.attach(el); } catch (e) { console.error("[lk] attach", e); }
+    }
+  }
+
+  async function playAria() {
     let d = "";
     await beep();
-    d += "beep-fired ";
-    try { await roomRef.current?.startAudio(); d += "startAudio✓ "; } catch (e: any) { d += "startAudio✗:" + e.message + " "; }
+    d += "beep ";
+    try { await roomRef.current?.startAudio(); d += "startAudio✓ "; } catch { d += "startAudio✗ "; }
     d += "canPlay=" + roomRef.current?.canPlaybackAudio + " ";
+    attach();
     const el = audioRef.current;
     if (el) {
       el.muted = false;
       el.volume = 1;
-      try { await el.play(); d += "play✓ paused=" + el.paused + " "; } catch (e: any) { d += "play✗:" + e.message + " "; }
-      d += "src=" + !!el.srcObject;
+      try { await el.play(); d += "play✓ paused=" + el.paused; } catch (e: any) { d += "play✗:" + (e?.name || e); }
     } else { d += "no-element"; }
-    setupMeter();
     setDiag(d);
   }
 
@@ -92,7 +76,7 @@ function InterviewInner() {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
       s.getTracks().forEach((t) => t.stop());
-    } catch (e) {
+    } catch {
       setStatus("error");
       setMsg("Microphone is blocked. Allow it via the address-bar lock icon and reload.");
       return;
@@ -104,10 +88,10 @@ function InterviewInner() {
       room.on(RoomEvent.TrackSubscribed, (track: any, _p: any, who: any) => {
         console.log("[lk] TrackSubscribed", track.kind, who?.identity);
         if (track.kind === Track.Kind.Audio || track.kind === "audio") {
+          trackRef.current = track;
           setGotAudio(true);
-          botTrackRef.current = track.mediaStreamTrack;
-          if (audioRef.current) { try { track.attach(audioRef.current); } catch {} }
-          playNow();
+          attach();
+          audioRef.current?.play().catch(() => {});
         }
       });
       room.on(RoomEvent.Disconnected, () => { if (joinedRef.current) router.push(`/result/${id}`); });
@@ -141,13 +125,10 @@ function InterviewInner() {
         {status === "connecting" && <p className="sub">Connecting to Aria…</p>}
         {status === "connected" && (
           <>
-            <button onClick={playNow} style={{ background: "var(--green)", fontSize: 18, padding: 16, margin: "4px auto 12px", maxWidth: 380 }}>
-              🔊 TAP: test beep + hear Aria
+            <button onClick={playAria} style={{ background: "var(--green)", fontSize: 18, padding: 16, margin: "4px auto 12px", maxWidth: 380 }}>
+              🔊 TAP TO HEAR ARIA
             </button>
-            <div style={{ height: 16, background: "#0e1521", borderRadius: 8, overflow: "hidden", maxWidth: 380, margin: "0 auto" }}>
-              <div style={{ height: "100%", width: `${Math.min(100, level * 3)}%`, background: level > 2 ? "var(--green)" : "var(--border)", transition: "width .05s" }} />
-            </div>
-            <p className="pill">Aria audio received: {gotAudio ? "✓" : "…"} · incoming level: <b>{level}</b></p>
+            <p className="pill">Aria audio received: {gotAudio ? "✓" : "…"}</p>
             {diag && <p className="pill" style={{ wordBreak: "break-all" }}>{diag}</p>}
             <div className="live" style={{ justifyContent: "center", margin: "10px 0" }}>
               <span className="dot" /> Connected — talk to Aria.
