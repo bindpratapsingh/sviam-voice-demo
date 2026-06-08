@@ -11,9 +11,11 @@ function InterviewInner() {
   const credsRef = useRef<{ url: string; token: string } | null>(null);
   const [status, setStatus] = useState<"ready" | "connecting" | "connected" | "error">("ready");
   const [msg, setMsg] = useState("");
-  const [needAudio, setNeedAudio] = useState(false);
+  // Live diagnostics shown on screen:
+  const [botPresent, setBotPresent] = useState(false);
+  const [gotAudio, setGotAudio] = useState(false);
+  const [soundOn, setSoundOn] = useState(false);
 
-  // Validate the session up front (don't join yet — joining waits for the Start click so audio is allowed to play).
   useEffect(() => {
     if (!id) {
       router.push("/");
@@ -26,18 +28,25 @@ function InterviewInner() {
       return;
     }
     credsRef.current = JSON.parse(raw);
-    return () => {
-      try { roomRef.current?.disconnect(); } catch {}
-    };
+    return () => { try { roomRef.current?.disconnect(); } catch {} };
   }, [id, router]);
 
-  // Runs inside the Start click → user gesture → browser permits audio playback.
+  function attachAudio(track: any) {
+    try {
+      const el = track.attach();
+      el.autoplay = true;
+      (el as HTMLMediaElement).play?.().then(() => setSoundOn(true)).catch(() => {});
+      document.body.appendChild(el);
+      setGotAudio(true);
+      console.log("[lk] attached remote audio track");
+    } catch (e) { console.error("attach failed", e); }
+  }
+
   async function start() {
     const creds = credsRef.current;
     if (!creds) return;
     setStatus("connecting");
 
-    // Mic permission + verify.
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: true });
       s.getTracks().forEach((t) => t.stop());
@@ -49,28 +58,35 @@ function InterviewInner() {
     }
 
     try {
-      const { Room, RoomEvent } = await import("livekit-client");
+      const { Room, RoomEvent, Track } = await import("livekit-client");
       const room = new Room();
       roomRef.current = room;
 
-      room.on(RoomEvent.TrackSubscribed, (track: any) => {
-        if (track.kind === "audio") {
-          const el = track.attach();
-          el.autoplay = true;
-          (el as HTMLMediaElement).play?.().catch(() => setNeedAudio(true));
-          document.body.appendChild(el);
-        }
+      room.on(RoomEvent.TrackSubscribed, (track: any, _pub: any, participant: any) => {
+        console.log("[lk] TrackSubscribed", track.kind, "from", participant?.identity);
+        if (track.kind === Track.Kind.Audio || track.kind === "audio") attachAudio(track);
       });
-      room.on(RoomEvent.Disconnected, () => {
-        if (joinedRef.current) router.push(`/result/${id}`);
+      room.on(RoomEvent.ParticipantConnected, (p: any) => {
+        console.log("[lk] ParticipantConnected", p?.identity);
+        setBotPresent(true);
       });
+      room.on(RoomEvent.Disconnected, () => { if (joinedRef.current) router.push(`/result/${id}`); });
       room.on(RoomEvent.AudioPlaybackStatusChanged, () => {
-        if (!room.canPlaybackAudio) setNeedAudio(true);
+        setSoundOn(!!room.canPlaybackAudio);
+        console.log("[lk] canPlaybackAudio", room.canPlaybackAudio);
       });
 
       await room.connect(creds.url, creds.token);
       joinedRef.current = true;
-      try { await room.startAudio(); } catch { setNeedAudio(true); }
+      console.log("[lk] connected; remote participants:", room.remoteParticipants.size);
+
+      // Pick up anything already in the room (bot may have joined first).
+      room.remoteParticipants.forEach((p: any) => {
+        setBotPresent(true);
+        p.trackPublications.forEach((pub: any) => { if (pub.track && pub.kind === "audio") attachAudio(pub.track); });
+      });
+
+      try { await room.startAudio(); setSoundOn(true); } catch { /* needs the button */ }
       await room.localParticipant.setMicrophoneEnabled(true);
       setStatus("connected");
     } catch (e: any) {
@@ -84,11 +100,11 @@ function InterviewInner() {
     if (joinedRef.current && roomRef.current) roomRef.current.disconnect();
     else router.push(`/result/${id}`);
   }
-
   async function enableSound() {
-    try { await roomRef.current?.startAudio(); setNeedAudio(false); } catch {}
+    try { await roomRef.current?.startAudio(); setSoundOn(true); } catch {}
   }
 
+  const yn = (b: boolean) => (b ? "✓" : "…");
   return (
     <div className="wrap">
       <div className="card" style={{ textAlign: "center" }}>
@@ -102,22 +118,20 @@ function InterviewInner() {
         )}
         {status === "connecting" && <p className="sub">Connecting to Aria… allow the microphone.</p>}
         {status === "connected" && (
-          <div className="live" style={{ justifyContent: "center", margin: "18px 0" }}>
-            <span className="dot" /> Connected — Aria is listening. Just talk; interrupt her any time.
-          </div>
-        )}
-        {status === "error" && <p className="err">{msg}</p>}
-
-        {needAudio && status === "connected" && (
-          <button onClick={enableSound} style={{ maxWidth: 280, margin: "0 auto 12px" }}>🔊 Can't hear Aria? Tap to enable sound</button>
-        )}
-        {status === "connected" && (
-          <button onClick={end} className="ghost" style={{ maxWidth: 240, margin: "12px auto 0" }}>
-            End interview & see verdict
-          </button>
+          <>
+            <div className="live" style={{ justifyContent: "center", margin: "14px 0" }}>
+              <span className="dot" /> Connected — just talk; interrupt Aria any time.
+            </div>
+            <p className="pill">Aria in room: {yn(botPresent)} &nbsp;·&nbsp; Receiving her audio: {yn(gotAudio)} &nbsp;·&nbsp; Sound on: {yn(soundOn)}</p>
+            <button onClick={enableSound} style={{ maxWidth: 300, margin: "10px auto 0" }}>🔊 Enable / unmute Aria's voice</button>
+            <button onClick={end} className="ghost" style={{ maxWidth: 240, margin: "10px auto 0" }}>End interview & see verdict</button>
+          </>
         )}
         {status === "error" && (
-          <button onClick={() => router.push("/")} className="ghost" style={{ maxWidth: 200, margin: "20px auto 0" }}>Back</button>
+          <>
+            <p className="err">{msg}</p>
+            <button onClick={() => router.push("/")} className="ghost" style={{ maxWidth: 200, margin: "20px auto 0" }}>Back</button>
+          </>
         )}
       </div>
     </div>
